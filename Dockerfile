@@ -1,27 +1,18 @@
-# --- Build Stage ---
-FROM python:3.13-slim AS builder
+FROM golang:1.27 AS builder
+WORKDIR /src
+COPY go.mod go.sum ./
+RUN go mod download && go mod verify
+COPY *.go ./
+RUN CGO_ENABLED=0 go build -trimpath -buildvcs=false -ldflags="-s -w" -o /exporter .
 
-WORKDIR /app
-
-RUN pip install --no-cache-dir poetry
-
-COPY pyproject.toml poetry.lock poetry.toml ./
-
-RUN poetry install --no-interaction --no-ansi --no-root --with main
-
-COPY . .
-
-RUN poetry install --no-interaction --no-ansi --with main
-
-FROM python:3.13-slim AS runtime
-
-WORKDIR /app
-
-RUN useradd --create-home exporter
-
-COPY --from=builder /app /app
-RUN chown -R exporter:exporter /app
-
-USER exporter
-
-ENTRYPOINT ["/app/.venv/bin/python3", "-m", "emser_therme_capacity_exporter.main"]
+FROM scratch
+COPY --from=builder /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-certificates.crt
+COPY --from=builder /exporter /exporter
+# Unprivileged user; no shell, package manager or other binaries in the image.
+USER 65534:65534
+EXPOSE 8838
+# Uses the exporter binary itself because scratch has no curl/wget.
+# If you change --port, override the healthcheck accordingly.
+HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --start-interval=1s --retries=3 \
+  CMD ["/exporter", "-healthcheck"]
+ENTRYPOINT ["/exporter"]
